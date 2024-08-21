@@ -80,7 +80,7 @@ function getExtensions(extensions) {
 }
 function getServerHelloDesc(buf) {
   return {
-    reocrdHeader: buf.subarray(0, 5),
+    recordHeader: buf.subarray(0, 5),
     handshakeHeader: buf.subarray(5, 9),
     serverVersion: buf.subarray(9, 11),
     serverRandom: buf.subarray(11, 43),
@@ -130,6 +130,14 @@ function getServerCertificateVerify(data, offset) {
   }
 }
 
+function handleWrappedRecord(wrappedRecord) {
+  const encryptedData = wrappedRecord.subarray(5, -16);
+  const authTag = wrappedRecord.subarray(-16);
+  console.log("🚀 ~ handleWrappedRecord ~ wrappedRecord:", wrappedRecord);
+  console.log("🚀 ~ handleWrappedRecord ~ encryptedData:", encryptedData)
+  console.log("🚀 ~ handleWrappedRecord ~ authTag:", authTag);
+}
+
 
 function startHttpSocket(url, callback) {
   // http.get(url, callback);
@@ -175,6 +183,7 @@ function startHttpSocket(url, callback) {
       console.log("🚀 ~ file: https_google.js:182 ~ socket.on ~ changeCipherSec:", changeCipherSec);
       if (changeCipherSec) {
         const wrappedRecord = getWrappedRecord(responseData, serverHello.length + changeCipherSec.length)
+        handleWrappedRecord(wrappedRecord.data);
         console.log("🚀 ~ file: https_google.js:193 ~ socket.on ~ wrappedRecord:", wrappedRecord);
         console.log(" total length ", serverHello.length + changeCipherSec.length + wrappedRecord.length);
         console.log("🚀 ~ file: https_google.js:193 ~ socket.on ~ wrappedRecord:", responseData.subarray(serverHello.length + changeCipherSec.length + wrappedRecord.length));
