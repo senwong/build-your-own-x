@@ -1,6 +1,8 @@
 const assert = require("assert");
 const fs = require("fs");
-const { createHash, hkdfSync, createECDH, createDiffieHellman, getCurves, diffieHellman, createPrivateKey, createPublicKey, randomBytes, createHmac } = require("crypto");
+const { webcrypto, createHash, hkdfSync, createECDH, createDiffieHellman, getCurves, diffieHellman, createPrivateKey, createPublicKey, randomBytes, createHmac } = require("crypto");
+
+const { subtle } = webcrypto;
 
 /**
  * 
@@ -97,22 +99,71 @@ function hmac384(salt, data) {
   return hmac.digest("hex");
 }
 
+/**
+ * 
+ * @param {Buffer} buffer 
+ * @param {Number} length 
+ */
+function padBuffer(buffer, length) {
+  return Buffer.from(buffer.toString("hex").padStart(length, "0"), "hex");
+}
+
 function hkdfExpandLabel(prk, label, context, length) {
   // Convert label and context to buffers
-  const labelBuffer = Buffer.from(label);
-  const contextBuffer = Buffer.from(context);
+  const labelBuffer = Buffer.from("tls13 " + label, "utf-8");
+
+  const contextLength = context.length / 2;
 
   // Calculate the info string for HKDF Expand
   const info = Buffer.concat([
-    Buffer.from([length]), // Length of the derived key
+    padBuffer(Buffer.from([length]), 4),
+    padBuffer(Buffer.from([label.length + 6]), 2),
     labelBuffer, // Label
-    contextBuffer, // Context
+    padBuffer(Buffer.from([contextLength]), 2),
+    Buffer.from(context, "hex"), // Context
   ]);
+  console.log("🚀 ~ file: diffieHellman.js:123 ~ hkdfExpandLabel ~ info:", info.toString("hex"));
+  console.log("🚀 ~ file: diffieHellman.js:123 ~ hkdfExpandLabel ~ prk:", Buffer.from(prk, "hex"));
 
   // Derive the key using HKDF Expand
-  const derivedKey = hkdfSync('sha384', prk, Buffer.alloc(0), info, length);
+  const derivedKey = hkdfSync('sha384', prk, Buffer.from([0x00, 0x00]), info, length);
 
   return Buffer.from(derivedKey).toString('hex');
+}
+
+async function hkdfExpandLabel2(prk, label, context, length) {
+  // Convert label and context to buffers
+  const labelBuffer = Buffer.from("tls13 " + label, "utf-8");
+
+  const contextLength = context.length / 2;
+
+  // Calculate the info string for HKDF Expand
+  const info = Buffer.concat([
+    padBuffer(Buffer.from([length]), 4),
+    padBuffer(Buffer.from([label.length + 6]), 2),
+    labelBuffer, // Label
+    padBuffer(Buffer.from([contextLength]), 2),
+    Buffer.from(context, "hex"), // Context
+  ]);
+  console.log("🚀 ~ file: diffieHellman.js:123 ~ hkdfExpandLabel ~ info:", info.toString("hex"));
+
+  // Derive the key using HKDF Expand
+  // const derivedKey = hkdfSync('sha384', prk, Buffer.from([0x00, 0x00]), info, length);
+
+  // return Buffer.from(derivedKey).toString('hex');
+  const keyMaterial = await subtle.importKey(
+    'raw',
+    Buffer.from(prk, "hex"),
+    {name: 'HDKF', },
+    false,
+    ['deriveKey']);
+  const bits = await subtle.deriveBits({
+    name: 'HKDF',
+    hash: 'SHA-384',
+    info,
+    salt: Buffer.from([0x00, 0x00]),
+  }, keyMaterial, length);
+  return bits;
 }
 
 const clientHelloData = Buffer.from("16030100f8010000f40303000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20e0e1e2e3e4e5e6e7e8e9eaebecedeeeff0f1f2f3f4f5f6f7f8f9fafbfcfdfeff000813021303130100ff010000a30000001800160000136578616d706c652e756c666865696d2e6e6574000b000403000102000a00160014001d0017001e0019001801000101010201030104002300000016000000170000000d001e001c040305030603080708080809080a080b080408050806040105010601002b0003020304002d00020101003300260024001d0020358072d6365880d1aeea329adf9121383851ed21a28e3b75e965d0d2cd166254", "hex");
@@ -125,12 +176,16 @@ const zeroKey =  Buffer.alloc(48, 0);
 
 const earlySecret = hmac384(Buffer.from([0x00, 0x00]), zeroKey);
 console.log("🚀 ~ earlySecret:", earlySecret)
-// 7ee8206f5570023e6dc7519eb1073bc4e791ad37b5c382aa10ba18e2357e716971f9362f2c2fe2a76bfd78dfec4ea9b5
 const emptyHash = sha384(Buffer.alloc(0));
 console.log("🚀 ~ emptyHash:", emptyHash)
 
 // HKDF-Expand-Label(key: early_secret, label: "derived", ctx: empty_hash, len: 48)
 const derivedSecret = hkdfExpandLabel(earlySecret, "derived", emptyHash, 48);
 console.log("🚀 ~ derivedSecret:", derivedSecret);
-// 50 1e fa af 52 99 21 25 44 4a 9f a6 2c 00 2c 07 57 70 8e 6b b1 4b f6 a7 c8 e3 c1 26 f4 9c 45 ad c5 c3 55 a6 0f 3b d9 4c a1 e0 d2 52 61 45 91 f8
-// target 1591dac5cbbf0330a4a84de9c753330e92d01f0a88214b4464972fd668049e93e52f2b16fad922fdc0584478428f282b
+// target 
+// 要生成的目标deriveSercret是 1591dac5cbbf0330a4a84de9c753330e92d01f0a88214b4464972fd668049e93e52f2b16fad922fdc0584478428f282b
+// info 是00300d746c73313320646572697665643038b060a751ac96384cd9327eb1b1e36a21fdb71114be07434c0cc7bf63f6e1da274edebfe76f65fbd51ad2f14898b95b
+
+// hkdfExpandLabel2(earlySecret, "derived", emptyHash, 48).then(res => {
+//   console.log("🚀 ~ file: diffieHellman.js:194 ~ hkdfExpandLabel ~ res:", res);
+// });
