@@ -148,20 +148,46 @@ function hkdfExpandLabel(prk, label, context, length) {
   return hexoutput.substring(0, hexlength);
 }
 
+const gcm_ivlen = 12;
+
 /**
  * 
- * @param {string} key 
  * @param {string} iv 
- * @param {string} data 
+ * @param {number} seq recor index, 从0开始
  */
-function decrypt(key, iv, authTag, recData, data) {
+function buildIV(iv, seq) {
+  for (let i = 0; i < 8; i++) {
+    iv[gcm_ivlen - 1 - i] ^= ((seq>>(i*8))&0xFF)
+  }
+  return iv;
+}
+
+/**
+ * 
+ * @param {Buffer} key 
+ * @param {Buffer} iv 
+ * @param {Buffer} recData 
+ * @param {Buffer} data
+ * @param {Buffer} authTag 
+ * @param {number} recordNum 
+ */
+function decrypt(key, iv, recData, data, authTag, recordNum) {
+  console.log("🚀 ~ file: diffieHellman.js:173 ~ decrypt ~ iv:", iv);
+  buildIV(iv, recordNum);
+  console.log("🚀 ~ file: diffieHellman.js:184 ~ decrypt ~ iv:", iv);
     
-  const decipher = createDecipheriv('aes-256-gcm', Buffer.from(key, "hex"), Buffer.from(iv, "hex"));
-  decipher.setAAD(recData, { encoding: "hex" });
-  decipher.setAuthTag(authTag, "hex");
+  const decipher = createDecipheriv('aes-256-gcm', key, iv, { authTagLength: authTag.length });
+  decipher.setAuthTag(authTag);
+  decipher.setAAD(recData);
+  decipher.setAutoPadding(true);
   
-  let decryptedData = decipher.update(data, 'hex', 'hex');
-  decryptedData += decipher.final('hex');
+  let decryptedData = decipher.update(data, "binary", 'hex');
+  // decipher.final("hex");
+  try {
+    decryptedData += decipher.final("hex");
+  } catch (error) {
+    console.error('Decryption failed:', error);
+  }
   return decryptedData;
 }
 
@@ -190,18 +216,53 @@ const sSecret = hkdfExpandLabel(handshakeSecret, "s hs traffic", clientHelloHash
 console.log("🚀 ~ cSecret:", cSecret)
 console.log("🚀 ~ sSecret:", sSecret)
 
-const clientHandleShakeKey = hkdfExpandLabel(cSecret, "key", "", 32);
-const serverHandShakeKey = hkdfExpandLabel(sSecret, "key", "", 32);
-const clientHandShakeIV = hkdfExpandLabel(cSecret, "iv", "", 12);
-const serverHandShakeIV = hkdfExpandLabel(sSecret, "iv", "", 12);
+let clientHandleShakeKey = hkdfExpandLabel(cSecret, "key", "", 32);
+let serverHandShakeKey = hkdfExpandLabel(sSecret, "key", "", 32);
+let clientHandShakeIV = hkdfExpandLabel(cSecret, "iv", "", 12);
+let serverHandShakeIV = hkdfExpandLabel(sSecret, "iv", "", 12);
 
+clientHandleShakeKey = Buffer.from(clientHandleShakeKey, "hex");
+serverHandShakeKey = Buffer.from(serverHandShakeKey, "hex");
+clientHandShakeIV = Buffer.from(clientHandShakeIV, "hex");
+serverHandShakeIV = Buffer.from(serverHandShakeIV, "hex");
 console.log("🚀 ~ clientHandleShakeKey:", clientHandleShakeKey)
 console.log("🚀 ~ serverHandShakeKey:", serverHandShakeKey)
 console.log("🚀 ~ clientHandShakeIV:", clientHandShakeIV)
 console.log("🚀 ~ serverHandShakeIV:", serverHandShakeIV)
 
 
-const authTag = "9ddef56f2468b90adfa25101ab0344ae";
-const recData="1703030017";
-const decryptData = decrypt(serverHandShakeKey, serverHandShakeIV, authTag, recData, "6be02f9da7c2dc");
-console.log("🚀 ~ decryptData:", decryptData)
+// const authTag = "9ddef56f2468b90adfa25101ab0344ae";
+// const recData="1703030017";
+// const decryptData = decrypt(serverHandShakeKey, serverHandShakeIV, authTag, recData, "6be02f9da7c2dc");
+// console.log("🚀 ~ decryptData:", decryptData)
+
+
+/**
+ * 
+ * @param {Buffer} wrappedRecord 加密的record buffer data
+ */
+function decryptWrappedRecord(wrappedRecord, recordNum) {
+  const recData = wrappedRecord.subarray(0, 5);
+  const encryptedData = wrappedRecord.subarray(5, -16);
+  const authTag = wrappedRecord.subarray(-16);
+  
+  console.log("begin decrypt data =================================");
+  console.log("recData ", recData.toString("hex"));
+  console.log("encryptedData ", encryptedData.toString("hex"));
+  console.log("authTag ", authTag.toString("hex"));
+  
+  
+  const decryptData = decrypt(Buffer.from(serverHandShakeKey), Buffer.from(serverHandShakeIV), recData, encryptedData, authTag, recordNum);
+  return decryptData;
+}
+let recordNum = 0;
+let recordData = Buffer.from("17030300176be02f9da7c2dc9ddef56f2468b90adfa25101ab0344ae", "hex");
+const decryptData = decryptWrappedRecord(recordData, recordNum);
+console.log("🚀 ~ file: diffieHellman.js:229 ~ decryptData:", decryptData);
+
+
+recordNum = 1;
+recordData = Buffer.from("1703030343baf00a9be50f3f2307e726edcbdacbe4b18616449d46c6207af6e9953ee5d2411ba65d31feaf4f78764f2d693987186cc01329c187a5e4608e8d27b318e98dd94769f7739ce6768392caca8dcc597d77ec0d1272233785f6e69d6f43effa8e7905edfdc4037eee5933e990a7972f206913a31e8d04931366d3d8bcd6a4a4d647dd4bd80b0ff863ce3554833d744cf0e0b9c07cae726dd23f9953df1f1ce3aceb3b7230871e92310cfb2b098486f43538f8e82d8404e5c6c25f66a62ebe3c5f26232640e20a769175ef83483cd81e6cb16e78dfad4c1b714b04b45f6ac8d1065ad18c13451c9055c47da300f93536ea56f531986d6492775393c4ccb095467092a0ec0b43ed7a0687cb470ce350917b0ac30c6e5c24725a78c45f9f5f29b6626867f6f79ce054273547b36df030bd24af10d632dba54fc4e890bd0586928c0206ca2e28e44e227a2d5063195935df38da8936092eef01e84cad2e49d62e470a6c7745f625ec39e4fc23329c79d1172876807c36d736ba42bb69b004ff55f93850dc33c1f98abb92858324c76ff1eb085db3c1fc50f74ec04442e622973ea70743418794c388140bb492d6294a0540e5a59cfae60ba0f14899fca71333315ea083a68e1d7c1e4cdc2f56bcd6119681a4adbc1bbf42afd806c3cbd42a076f545dee4e118d0b396754be2b042a685dd4727e89c0386a94d3cd6ecb9820e9d49afeed66c47e6fc243eabebbcb0b02453877f5ac5dbfbdf8db1052a3c994b224cd9aaaf56b026bb9efa2e01302b36401ab6494e7018d6e5b573bd38bcef023b1fc92946bbca0209ca5fa926b4970b1009103645cb1fcfe552311ff730558984370038fd2cce2a91fc74d6f3e3ea9f843eed356f6f82d35d03bc24b81b58ceb1a43ec9437e6f1e50eb6f555e321fd67c8332eb1b832aa8d795a27d479c6e27d5a61034683891903f66421d094e1b00a9a138d861e6f78a20ad3e1580054d2e305253c713a02fe1e28deee7336246f6ae34331806b46b47b833c39b9d31cd300c2a6ed831399776d07f570eaf0059a2c68a5f3ae16b617404af7b7231a4d942758fc020b3f23ee8c15e36044cfd67cd640993b16207597fbf385ea7a4d99e8d456ff83d41f7b8b4f069b028a2a63a919a70e3a10e3084158faa5bafa30186c6b2f238eb530c73e", "hex");
+const decryptData2 = decryptWrappedRecord(recordData, recordNum);
+console.log("🚀 ~ file: diffieHellman.js:229 ~ decryptData2:", decryptData2);
+
