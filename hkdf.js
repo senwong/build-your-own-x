@@ -1,14 +1,6 @@
-const { createHmac, createHash } = require("crypto");
+const { createHmac } = require("crypto");
+const { padBuffer } = require("./utils");
 
-
-/**
- * 
- * @param {Buffer} buffer 
- * @param {Number} length 
- */
-function padBuffer(buffer, length) {
-  return Buffer.from(buffer.toString("hex").padStart(length, "0"), "hex");
-}
 
 /**
  * 
@@ -51,27 +43,6 @@ function hkdfExpandLabel(prk, label, context, length) {
 }
 
 
-
-/**
- * 
- * @param {buffer} salt 
- * @param {Buffer} data 
- * @returns 
- */
-function hmac384(salt, data) {
-  const hmac = createHmac('sha384', salt);
-  hmac.update(data);
-  return hmac.digest("hex");
-}
-
-function sha384(data) {
-  const hash = createHash('sha384');
-  hash.update(data);
-  return hash.digest();
-}
-
 module.exports = {
   hkdfExpandLabel,
-  hmac384,
-  sha384,
 }
