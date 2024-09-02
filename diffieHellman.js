@@ -3,7 +3,7 @@ const { bufToDecimal } = require("./utils");
 
 /**
  * 
- * @param {string} hexStr 
+ * @param {Buffer} hexStr 
  */
 function genPrivatePem(hexStr) {
   const privateKeyHeader = Buffer.from("302e020100300506032b656e04220420", "hex");
@@ -13,7 +13,7 @@ function genPrivatePem(hexStr) {
 
 /**
  * 
- * @param {string} hexStr 
+ * @param {Buffer} hexStr 
  */
 function genPublicPem(hexStr) {
   const publicKeyHeader = Buffer.from("302a300506032b656e032100", "hex");
@@ -23,8 +23,8 @@ function genPublicPem(hexStr) {
 
 /**
  * 
- * @param {string} privateKey 16进制32bytes随机数
- * @param {string} pubKey 16进制32bytes随机数
+ * @param {Buffer} privateKey 16进制32bytes随机数
+ * @param {Buffer} pubKey 16进制32bytes随机数
  */
 function genShareKey(privateKeyHex, publicKeyHex) {
   const privateKeyPem = genPrivatePem(privateKeyHex);
@@ -52,6 +52,39 @@ function getHelloHash(clientHello, serverHello) {
     serverHello.subarray(5),
   ]));
 }
+
+
+/**
+ * 
+ * @param {Buffer} clientHello 
+ * @param {Buffer} serverHello 
+ * @param {Buffer} serverExtensions 
+ * @param {Buffer} serverCert 
+ * @param {Buffer} serverCertVerify 
+ * @param {Buffer} serverFinished 
+ */
+function getHandShakeHash(clientHello, serverHello, decryptedData) {
+ console.log("🚀 ~ getHandShakeHash ~ serverHello:", serverHello)
+ console.log("🚀 ~ getHandShakeHash ~ clientHello:", clientHello)
+ 
+  const splittedData = splitDecryptData(decryptedData.subarray(0, -1));
+  
+  const serverExtensions = getServerExtensions(splittedData);
+  const serverCert = getServerCert(splittedData);
+  const serverCertVerify = getServerCertVerify(splittedData);
+  console.log("🚀 ~ getHandShakeHash ~ serverCertVerify:", serverCertVerify.toString("hex"));
+  const serverFinished = getServerFinished(splittedData);
+  
+  return sha384(Buffer.concat([
+    clientHello.subarray(5),
+    serverHello.subarray(5),
+    serverExtensions,
+    serverCert,
+    serverCertVerify,
+    serverFinished
+  ]));
+}
+
 
 /**
  * 
@@ -166,17 +199,12 @@ function decrypt(key, iv, recData, data, authTag, recordNum) {
   return decryptedData;
 }
 
-// const authTag = "9ddef56f2468b90adfa25101ab0344ae";
-// const recData="1703030017";
-// const decryptData = decrypt(serverHandShakeKey, serverHandShakeIV, authTag, recData, "6be02f9da7c2dc");
-// console.log("🚀 ~ decryptData:", decryptData)
-
 
 /**
  * 
  * @param {Buffer} wrappedRecord 加密的record buffer data
  */
-function decryptWrappedRecord (wrappedRecord, sequenceNumber, { serverHandShakeKey, serverHandShakeIV }) {
+function decryptWrappedRecord(wrappedRecord, sequenceNumber, { serverKey, serverIV }) {
   const recData = wrappedRecord.subarray(0, 5);
   const encryptedData = wrappedRecord.subarray(5, -16);
   const authTag = wrappedRecord.subarray(-16);
@@ -185,17 +213,17 @@ function decryptWrappedRecord (wrappedRecord, sequenceNumber, { serverHandShakeK
   console.log("recData ", recData.toString("hex"));
   console.log("encryptedData ", encryptedData.toString("hex"));
   console.log("authTag ", authTag.toString("hex"));
-  console.log("serverHandShakeKey ", serverHandShakeKey);
-  console.log("serverHandShakeIV ", serverHandShakeIV);
+  console.log("serverKey ", serverKey);
+  console.log("serverIV ", serverIV);
   
-  const decryptData = decrypt(serverHandShakeKey, serverHandShakeIV, recData, encryptedData, authTag, sequenceNumber);
+  const decryptData = decrypt(serverKey, serverIV, recData, encryptedData, authTag, sequenceNumber);
   return decryptData;
 }
 
 
-function getServerHandShakeData(clientHelloData, serverHelloData, privateKey, publicKey) {
+function getServerHandShakeKeys(clientHelloData, serverHelloData, privateKey, publicKey) {
+   
   const clientHelloHash = getHelloHash(clientHelloData, serverHelloData);
-  console.log("🚀 ~ clientHello:", clientHelloHash)
 
   const zeroKey =  Buffer.alloc(48, 0);
 
@@ -213,25 +241,52 @@ function getServerHandShakeData(clientHelloData, serverHelloData, privateKey, pu
     publicKey // client public key
   );
 
-  const handshakeSecret=hmac384(Buffer.from(derivedSecret, "hex"), serverShareKey);
-  console.log("🚀 ~ handshakeSecret:", handshakeSecret);
+  const handShakeSecret = hmac384(Buffer.from(derivedSecret, "hex"), serverShareKey);
+  console.log("🚀 ~ handShakeSecret:", handShakeSecret);
 
-  const cSecret = hkdfExpandLabel(handshakeSecret, "c hs traffic", clientHelloHash, 48);
-  const sSecret = hkdfExpandLabel(handshakeSecret, "s hs traffic", clientHelloHash, 48);
-  console.log("🚀 ~ cSecret:", cSecret)
-  console.log("🚀 ~ sSecret:", sSecret)
+  const cSecret = hkdfExpandLabel(handShakeSecret, "c hs traffic", clientHelloHash, 48);
+  const sSecret = hkdfExpandLabel(handShakeSecret, "s hs traffic", clientHelloHash, 48);
 
-  let clientHandleShakeKey = hkdfExpandLabel(cSecret, "key", "", 32);
-  let serverHandShakeKey = hkdfExpandLabel(sSecret, "key", "", 32);
-  let clientHandShakeIV = hkdfExpandLabel(cSecret, "iv", "", 12);
-  let serverHandShakeIV = hkdfExpandLabel(sSecret, "iv", "", 12);
+  const clientHandleShakeKey = hkdfExpandLabel(cSecret, "key", "", 32);
+  const serverHandShakeKey = hkdfExpandLabel(sSecret, "key", "", 32);
+  const clientHandShakeIV = hkdfExpandLabel(cSecret, "iv", "", 12);
+  const serverHandShakeIV = hkdfExpandLabel(sSecret, "iv", "", 12);
 
   return {
-    clientHandleShakeKey: Buffer.from(clientHandleShakeKey, "hex"),
-    serverHandShakeKey: Buffer.from(serverHandShakeKey, "hex"),
-    clientHandShakeIV: Buffer.from(clientHandShakeIV, "hex"),
-    serverHandShakeIV: Buffer.from(serverHandShakeIV, "hex"),
+    clientSecret: cSecret,
+    handShakeSecret: Buffer.from(handShakeSecret, "hex"),
+    clientKey: Buffer.from(clientHandleShakeKey, "hex"),
+    serverKey: Buffer.from(serverHandShakeKey, "hex"),
+    clientIV: Buffer.from(clientHandShakeIV, "hex"),
+    serverIV: Buffer.from(serverHandShakeIV, "hex"),
   }
+}
+
+/**
+ * 
+ * @param {string} handshakeSecret 
+ * @param {string} handShakeHash 
+ * @returns 
+ */
+function getApplicationKeys(handShakeSecret, handShakeHash) {
+  const emptyHash = sha384(Buffer.alloc(0));
+  const zeroKey =  Buffer.alloc(48, 0);
+  const derivedSecret = hkdfExpandLabel(handShakeSecret, "derived", emptyHash, 48);
+  const masterSecret = hmac384(Buffer.from(derivedSecret, "hex"), zeroKey);
+  
+  const clientSecret =  hkdfExpandLabel(masterSecret, "c ap traffic", handShakeHash, 48);
+  const serverSecret =  hkdfExpandLabel(masterSecret, "s ap traffic", handShakeHash, 48);
+  
+  const clientKey = hkdfExpandLabel(clientSecret, "key", "", 32);
+  const serverKey = hkdfExpandLabel(serverSecret, "key", "", 32);
+  const clientIV = hkdfExpandLabel(clientSecret, "iv", "", 12);
+  const serverIV = hkdfExpandLabel(serverSecret, "iv", "", 12);
+  return {
+    clientKey: Buffer.from(clientKey, "hex"),
+    serverKey: Buffer.from(serverKey, "hex"),
+    clientIV: Buffer.from(clientIV, "hex"),
+    serverIV: Buffer.from(serverIV, "hex"),
+  };
 }
 
 /**
@@ -244,9 +299,9 @@ function splitDecryptData(data) {
   while(index < data.length) {
     const type = data.subarray(index, index + 1);
     const dataLength = bufToDecimal(data.subarray(index + 1, index + 4));
-    const buf = data.subarray(index + 4, index + 4 + dataLength);
+    const buf = data.subarray(index, index + 4 + dataLength);
     list.push({
-      type,
+      type: type.toString("hex"),
       dataLength: dataLength,
       data: buf,
     });
@@ -255,32 +310,47 @@ function splitDecryptData(data) {
   return list;
 }
 
-module.exports.getServerHandShakeData = getServerHandShakeData;
+function getServerExtensions(splittedData) {
+  return splittedData.find(i => i.type === "08").data;
+}
+
+function getServerCert(splittedData) {
+  return splittedData.find(i => i.type === "0b").data;
+}
+
+function getServerCertVerify(splittedData) {
+  return splittedData.find(i => i.type === "0f").data;
+}
+
+function getServerFinished(splittedData) {
+  return splittedData.find(i => i.type === "14").data;
+}
+
+module.exports.getServerHandShakeKeys = getServerHandShakeKeys;
 
 module.exports.decryptWrappedRecord = decryptWrappedRecord;
 
 module.exports.splitDecryptData = splitDecryptData;
+
+module.exports.getApplicationKeys = getApplicationKeys;
+
+module.exports.getHandShakeHash = getHandShakeHash;
 
 
 //--------------------test-----------------
 
 
 function test() {
-  const clientHelloData = Buffer.from("16030100f8010000f40303000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20e0e1e2e3e4e5e6e7e8e9eaebecedeeeff0f1f2f3f4f5f6f7f8f9fafbfcfdfeff000813021303130100ff010000a30000001800160000136578616d706c652e756c666865696d2e6e6574000b000403000102000a00160014001d0017001e0019001801000101010201030104002300000016000000170000000d001e001c040305030603080708080809080a080b080408050806040105010601002b0003020304002d00020101003300260024001d0020358072d6365880d1aeea329adf9121383851ed21a28e3b75e965d0d2cd166254", "hex");
-  const serverHelloData = Buffer.from("160303007a020000760303707172737475767778797a7b7c7d7e7f808182838485868788898a8b8c8d8e8f20e0e1e2e3e4e5e6e7e8e9eaebecedeeeff0f1f2f3f4f5f6f7f8f9fafbfcfdfeff130200002e002b0002030400330024001d00209fd7ad6dcff4298dd3f96d5b1b2af910a0535b1488d7f8fabb349a982880b615", "hex");
-
-  const privateKey = Buffer.from("202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f", "hex");
-  const publicKey = Buffer.from("9fd7ad6dcff4298dd3f96d5b1b2af910a0535b1488d7f8fabb349a982880b615", "hex");
-  const handShakeKeys = getServerHandShakeData(clientHelloData, serverHelloData, privateKey, publicKey);
-  console.log("🚀 ~ handShakeKeys:", handShakeKeys)
-
-  let recordNum = 0;
-  let recordData = Buffer.from("17030300176be02f9da7c2dc9ddef56f2468b90adfa25101ab0344ae", "hex");
-  const decryptData = decryptWrappedRecord(recordData, recordNum, handShakeKeys);
-  console.log("🚀 ~ file: diffieHellman.js:229 ~ decryptData:", decryptData);
+  const handshake_hash = "fa6800169a6baac19159524fa7b9721b41be3c9db6f3f93fa5ff7e3db3ece204d2b456c51046e40ec5312c55a86126f5";
+  const handshake_secret = "bdbbe8757494bef20de932598294ea65b5e6bf6dc5c02a960a2de2eaa9b07c929078d2caa0936231c38d1725f179d299";
+  const applicationKeys = getApplicationKeys(handshake_secret, handshake_hash);
+  console.log("🚀 ~ test ~ applicationKeys:", applicationKeys)
 }
 
 // recordNum = 1;
 // recordData = Buffer.from("1703030343baf00a9be50f3f2307e726edcbdacbe4b18616449d46c6207af6e9953ee5d2411ba65d31feaf4f78764f2d693987186cc01329c187a5e4608e8d27b318e98dd94769f7739ce6768392caca8dcc597d77ec0d1272233785f6e69d6f43effa8e7905edfdc4037eee5933e990a7972f206913a31e8d04931366d3d8bcd6a4a4d647dd4bd80b0ff863ce3554833d744cf0e0b9c07cae726dd23f9953df1f1ce3aceb3b7230871e92310cfb2b098486f43538f8e82d8404e5c6c25f66a62ebe3c5f26232640e20a769175ef83483cd81e6cb16e78dfad4c1b714b04b45f6ac8d1065ad18c13451c9055c47da300f93536ea56f531986d6492775393c4ccb095467092a0ec0b43ed7a0687cb470ce350917b0ac30c6e5c24725a78c45f9f5f29b6626867f6f79ce054273547b36df030bd24af10d632dba54fc4e890bd0586928c0206ca2e28e44e227a2d5063195935df38da8936092eef01e84cad2e49d62e470a6c7745f625ec39e4fc23329c79d1172876807c36d736ba42bb69b004ff55f93850dc33c1f98abb92858324c76ff1eb085db3c1fc50f74ec04442e622973ea70743418794c388140bb492d6294a0540e5a59cfae60ba0f14899fca71333315ea083a68e1d7c1e4cdc2f56bcd6119681a4adbc1bbf42afd806c3cbd42a076f545dee4e118d0b396754be2b042a685dd4727e89c0386a94d3cd6ecb9820e9d49afeed66c47e6fc243eabebbcb0b02453877f5ac5dbfbdf8db1052a3c994b224cd9aaaf56b026bb9efa2e01302b36401ab6494e7018d6e5b573bd38bcef023b1fc92946bbca0209ca5fa926b4970b1009103645cb1fcfe552311ff730558984370038fd2cce2a91fc74d6f3e3ea9f843eed356f6f82d35d03bc24b81b58ceb1a43ec9437e6f1e50eb6f555e321fd67c8332eb1b832aa8d795a27d479c6e27d5a61034683891903f66421d094e1b00a9a138d861e6f78a20ad3e1580054d2e305253c713a02fe1e28deee7336246f6ae34331806b46b47b833c39b9d31cd300c2a6ed831399776d07f570eaf0059a2c68a5f3ae16b617404af7b7231a4d942758fc020b3f23ee8c15e36044cfd67cd640993b16207597fbf385ea7a4d99e8d456ff83d41f7b8b4f069b028a2a63a919a70e3a10e3084158faa5bafa30186c6b2f238eb530c73e", "hex");
 // const decryptData2 = decryptWrappedRecord(recordData, recordNum);
 // console.log("🚀 ~ file: diffieHellman.js:229 ~ decryptData2:", decryptData2);
+
+
+// test();

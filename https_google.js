@@ -1,6 +1,6 @@
-const fs = require("fs");
 const net = require("net");
-const { getServerHandShakeData, decryptWrappedRecord } = require("./diffieHellman");
+const { getServerHandShakeKeys, decryptWrappedRecord, splitDecryptData, getApplicationKeys, getHandShakeHash } = require("./diffieHellman");
+const { getClientChangeCipherSec, getClientFinishEncryptData, getClientPing } = require("./encrypt");
 
 const clientPublicKey = Buffer.from("358072d6365880d1aeea329adf9121383851ed21a28e3b75e965d0d2cd166254", "hex");
 const clientPrivateKey = Buffer.from("202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f", "hex");
@@ -79,7 +79,7 @@ function getExtensions(extensions) {
   return list;
 }
 function getServerHelloDesc(buf) {
-  return {
+  const ret = {
     recordHeader: buf.subarray(0, 5),
     handshakeHeader: buf.subarray(5, 9),
     serverVersion: buf.subarray(9, 11),
@@ -91,13 +91,13 @@ function getServerHelloDesc(buf) {
     extensions: getExtensions(buf.subarray(81)),
     length: bufToDecimal(buf.subarray(3, 5)) + 5,
     raw: buf,
+    publicKey: null,
   };
+  const found = ret.extensions.find(i => isPublicKeyExt(i));
+  ret.publicKey = found ? found.data.subarray(4) : null;
+  return ret;
 }
 
-function getPubKeyFromHello(serverHello) {
-  const found = serverHello.extensions.find(i => isPublicKeyExt(i));
-  return found ? found.data.subarray(4) : null;
-}
 
 function getServerHello(responseData) {
   let offset = 0, length = 5;
@@ -131,15 +131,8 @@ function getServerCertificateVerify(data, offset) {
   }
 }
 
-function handleWrappedRecord(serverHello, recordData) {
+function getUnwrappedRecord(recordData, handShakeKeys) {
 
-  const privateKey = clientPrivateKey.toString("hex");
-  const publicKey = getPubKeyFromHello(serverHello);
-  console.log("🚀 ~ handleWrappedRecord ~ publicKey:", publicKey)
-  if (!publicKey) return;
-  
-  const handShakeKeys = getServerHandShakeData(clientHello, serverHello.raw, privateKey, publicKey.toString("hex"));
-  console.log("🚀 ~ handShakeKeys:", handShakeKeys)
 
   let recordNum = 0;
   // let recordData = Buffer.from(wrappedRecord, "hex");
@@ -147,8 +140,38 @@ function handleWrappedRecord(serverHello, recordData) {
   return decryptData;
 }
 
-function logData(buf, name) {
-  fs.writeFileSync(name, buf.toString("hex"), { encoding: "utf-8" });
+const client = {
+  currentPhase: 1,
+  applicationKeys: null,
+}
+
+function handShakeResponse(socket, clientHello, serverHello, handShakeKeys, decryptedData, cb) {
+  const changeCipherSec = getClientChangeCipherSec();
+  socket.write(changeCipherSec, () => {
+    
+    const handShakeHash = getHandShakeHash(clientHello, serverHello, decryptedData);
+    const clientFinish = getClientFinishEncryptData({ handShakeKeys, handShakeHash });
+    
+    socket.write(clientFinish, () => {
+      
+     
+      
+      const applicationKeys = getApplicationKeys(handShakeKeys.handShakeSecret, handShakeHash);
+      client.applicationKeys = applicationKeys;
+      
+      const ping = getClientPing({
+        clientIV: applicationKeys.clientIV,
+        clientKey: applicationKeys.clientKey,
+      });
+      
+      cb();
+      return;
+      
+      socket.write(ping, () => {
+        cb();
+      });
+    });
+  });
 }
 
 
@@ -184,40 +207,40 @@ function startHttpSocket(url, callback) {
   });
   
   let responseData = Buffer.alloc(0);
+  let pongData = Buffer.alloc(0);
   
   socket.on('data', (data) => {
-    responseData = Buffer.concat([responseData, data]);
-    if (responseData.length < 6000) return;
-         
-    console.log("🚀 ~ file: https_google.js:198 ~ socket.on ~ responseData:", responseData.length);
-    const serverHello = getServerHello(responseData);
-    if (serverHello) {
-      
-      const changeCipherSec = getChangeCipherSec(responseData, serverHello.length);
-      console.log("🚀 ~ file: https_google.js:182 ~ socket.on ~ changeCipherSec:", changeCipherSec);
-      if (changeCipherSec) {
-        const wrappedRecord = getWrappedRecord(responseData, serverHello.length + changeCipherSec.length)
-        // handleWrappedRecord(serverHello, wrappedRecord.data);
-        // console.log("🚀 ~ file: https_google.js:193 ~ socket.on ~ wrappedRecord:", wrappedRecord);
-        // console.log(" total length ", serverHello.length + changeCipherSec.length + wrappedRecord.length);
-        // console.log("🚀 ~ file: https_google.js:193 ~ socket.on ~ wrappedRecord:", responseData.subarray(serverHello.length + changeCipherSec.length + wrappedRecord.length));
-        if (wrappedRecord) {
-          // const ServerCertificateVerify = getServerCertificateVerify(responseData, serverHello.length + changeCipherSec.length + wrappedRecord.length);
-          // console.log("🚀 ~ file: https_google.js:203 ~ socket.on ~ ServerCertificateVerify:", ServerCertificateVerify);
-          console.log("🚀 ~ socket.on ~ wrappedRecord:", wrappedRecord)
-          const decryptedData = handleWrappedRecord(serverHello, wrappedRecord.data);
-          logData(serverHello.raw, "serverHello2");
-          logData(changeCipherSec.data, "changeCipherSec2");
-          logData(wrappedRecord.data, "wrappedRecord2")
-          logData(decryptedData, "decryptedData")
-        }
+    if (client.currentPhase === 1) {
+      responseData = Buffer.concat([responseData, data]);
+      if (responseData.length < 6000) return;
+     
+      const serverHello = getServerHello(responseData);
+      if (serverHello) {
         
+        const changeCipherSec = getChangeCipherSec(responseData, serverHello.length);
+        if (changeCipherSec) {
+          const wrappedRecord = getWrappedRecord(responseData, serverHello.length + changeCipherSec.length)
+          if (wrappedRecord) {
+           console.log("🚀 ~ socket.on ~ wrappedRecord:", wrappedRecord)
+           
+            const handShakeKeys = getServerHandShakeKeys(clientHello, serverHello.raw, clientPrivateKey, serverHello.publicKey);
+            const decryptedData = getUnwrappedRecord(wrappedRecord.data, handShakeKeys);
+          
+            handShakeResponse(socket, clientHello, serverHello.raw, handShakeKeys, decryptedData, () => {
+              client.currentPhase = 2;
+            });
+          }
+        }
       }
+    } else if (client.currentPhase === 2) {
+      pongData = Buffer.concat([pongData, data]);
+      console.log("🚀 ~ socket.on ~ pongData:", pongData);
+      console.log("🚀 ~ socket.on ~ client.applicationKeys:", client.applicationKeys)
+      const decryptedData = getUnwrappedRecord(pongData, client.applicationKeys);
+      console.log("🚀 ~ socket.on ~ decryptedData:", decryptedData)
     }
-    
-    // processData(responseData);
-    
   });
+  
   socket.on('end', (end) => {
     console.log("🚀 ~ file: https.js:104 ~ socket.on ~ end:", end);
   });

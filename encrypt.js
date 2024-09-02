@@ -23,56 +23,31 @@ function encryptHandShake(iv, recordNum, key, recData, data) {
  */
 function getHandShakeFinishDecryptData({
   clientSecret,
-  clientHello,
-  serverHello,
-  serverExtensions,
-  serverCert,
-  serverCertVerify,
-  serverFinished,
+  handShakeHash,
 }) {
   const header = Buffer.from("14000030", "hex");
   
   const finishedKey = hkdfExpandLabel(clientSecret, "finished", "", 48);
-  const finishedHash = sha384(Buffer.concat([
-    clientHello.subarray(5),
-    serverHello.subarray(5),
-    serverExtensions,
-    serverCert,
-    serverCertVerify,
-    serverFinished,
-  ]));
-  const verify_data = hmac384(Buffer.from(finishedKey, "hex"), finishedHash);
-  // finished_key = HKDF-Expand-Label(key: client_secret, label: "finished", ctx: "", len: 48)
-  // finished_hash = SHA384(Client Hello ... Server Finished)
-  // verify_data = HMAC-SHA384(key: finished_key, msg: finished_hash)
+
+  const verify_data = hmac384(Buffer.from(finishedKey, "hex"), handShakeHash);
+
   return Buffer.concat([ header, Buffer.from(verify_data, "hex"), Buffer.from([0x16]) ]);
 }
 
 function getClientFinishEncryptData({
-  clientSecret,
-  clientHello,
-  serverHello,
-  serverExtensions,
-  serverCert,
-  serverCertVerify,
-  serverFinished,
-  clientHandShakeKey,
-  clientHandShakeIV,
+  handShakeKeys,
+  handShakeHash,
 }) {
-  const uncryptyedData = getHandShakeFinishDecryptData({
+  const { clientSecret, clientKey, clientIV } = handShakeKeys;
+  const decryptedData = getHandShakeFinishDecryptData({
     clientSecret,
-    clientHello,
-    serverHello,
-    serverExtensions,
-    serverCert,
-    serverCertVerify,
-    serverFinished,
+    handShakeHash,
   });
   
-  console.log("🚀 ~ testGetHandShakeFinish ~ uncryptedData:", uncryptyedData.toString("hex"))
-  // Buffer.from("14000030bff56a671b6c659d0a7c5dd18428f58bdd38b184a3ce342d9fde95cbd5056f7da7918ee320eab7a93abd8f1c02454d2716", "hex");
   const recData = Buffer.from("1703030045", "hex");
-  const [encryptedData, authTag] = encryptHandShake(clientHandShakeIV, 0, clientHandShakeKey, recData, uncryptyedData);
+  const [encryptedData, authTag] = encryptHandShake(clientIV, 0, clientKey, recData, decryptedData);
+  
+  
   return Buffer.concat([recData, encryptedData, authTag]);
 }
 
@@ -114,4 +89,29 @@ function testGetHandShakeFinish() {
   console.log("🚀 ~ file: encrypt.js:34 ~ encryptedData:", clientFinish.toString("hex"));
 }
 
-testGetHandShakeFinish();
+
+function getClientChangeCipherSec() {
+  return Buffer.from("140303000101", "hex");
+}
+
+function getClientPing({ clientIV, clientKey }) {
+  const ping = Buffer.concat([ Buffer.from("ping", "utf-8"), Buffer.from([0x17]) ]);
+  const recData = Buffer.from("1703030015", "hex");
+  const [encryptedData, authTag] = encryptHandShake(clientIV, 0, clientKey, recData, ping);
+  return Buffer.concat([recData, encryptedData, authTag]);
+}
+
+function testGetClientPing() {
+  const key = Buffer.from("de2f4c7672723a692319873e5c227606691a32d1c59d8b9f51dbb9352e9ca9cc", "hex");
+  const iv = Buffer.from("bb007956f474b25de902432f", "hex");
+  const data = getClientPing({
+    clientIV: iv,
+    clientKey: key,
+  });
+  console.log('ping data ', data);
+}
+
+// testGetClientPing();
+module.exports.getClientChangeCipherSec = getClientChangeCipherSec;
+module.exports.getClientPing = getClientPing;
+module.exports.getClientFinishEncryptData = getClientFinishEncryptData;
